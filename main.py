@@ -1,8 +1,8 @@
 from telethon import TelegramClient, events
 import requests
-import google.generativeai as genai
 import re
 import os
+from google import genai  # ✅ NEW SDK
 
 # ===== ENV VARIABLES =====
 api_id = int(os.getenv("API_ID"))
@@ -15,9 +15,8 @@ gemini_api_key = os.getenv("GEMINI_API_KEY")
 AREAS = ["baner", "bavdhan", "bhugaon"]
 MAX_RENT = 10000
 
-# ===== INIT GEMINI =====
-genai.configure(api_key=gemini_api_key)
-model = genai.GenerativeModel("gemini-1.5-flash")
+# ===== INIT GEMINI (NEW) =====
+client_ai = genai.Client(api_key=gemini_api_key)
 
 # ===== TELEGRAM CLIENT =====
 client = TelegramClient("session", api_id, api_hash)
@@ -44,7 +43,7 @@ def basic_filter(msg):
 
     return True
 
-# ===== AI FILTER =====
+# ===== AI FILTER (UPDATED) =====
 def ai_filter(msg):
     prompt = f"""
 User wants:
@@ -64,9 +63,14 @@ TYPE: single sharing or not
 """
 
     try:
-        response = model.generate_content(prompt)
-        text = response.text
+        response = client_ai.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=prompt
+        )
+
+        text = getattr(response, "text", "")
         return "MATCH: YES" in text, text
+
     except Exception as e:
         print("AI Error:", e)
         return False, str(e)
