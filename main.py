@@ -16,72 +16,75 @@ AREAS = ["baner", "bavdhan", "bhugaon", "pashan", "sus"]
 MAX_RENT = 10000
 
 # ===== INIT GEMINI =====
+print("🔑 Initializing Gemini...")
 client_ai = genai.Client(api_key=gemini_api_key)
 
 # ===== TELEGRAM CLIENT =====
+print("📡 Connecting Telegram client...")
 client = TelegramClient("session", api_id, api_hash)
 
 # ===== SEND ALERT =====
 def send_telegram_alert(message):
+    print("📤 Sending alert to Telegram...")
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    requests.post(url, data={"chat_id": chat_id, "text": message})
+    res = requests.post(url, data={"chat_id": chat_id, "text": message})
 
-# ===== BASIC FILTER (FASTER + SMARTER) =====
+    print("📬 Telegram Response:", res.status_code, res.text)
+
+# ===== BASIC FILTER =====
 def basic_filter(msg):
     msg_lower = msg.lower()
+    print("🔍 Running basic filter...")
 
     # Area check
-    if not any(area in msg_lower for area in AREAS):
+    area_match = any(area in msg_lower for area in AREAS)
+    print("📍 Area match:", area_match)
+
+    if not area_match:
         return False
 
-    # Reject obvious full-flat posts
+    # Flat rejection logic
     if "2bhk" in msg_lower or "3bhk" in msg_lower:
         if "per person" not in msg_lower and "sharing" not in msg_lower:
+            print("🏠 Rejected full flat")
             return False
 
-    # Reject unfurnished early
+    # Unfurnished reject
     if "unfurnished" in msg_lower:
+        print("🪑 Rejected unfurnished")
         return False
 
-    # Rent check (basic)
+    # Rent extraction
     rent = re.findall(r'\d{3,5}', msg_lower)
+    print("💰 Rent extracted:", rent)
+
     if rent:
         try:
             if int(rent[0]) > MAX_RENT:
+                print("💸 Rent too high:", rent[0])
                 return False
-        except:
-            pass
+        except Exception as e:
+            print("⚠️ Rent parse error:", e)
 
+    print("✅ Basic filter passed")
     return True
 
-# ===== AI FILTER (STRONG LOGIC) =====
+# ===== AI FILTER =====
 def ai_filter(msg):
+    print("🧠 Sending to AI...")
+
     prompt = f"""
 User is looking for:
-
-STRICT REQUIREMENTS:
-- ONLY single vacancy / flatmate / sharing (NOT full flat)
-- Rent must be <= 10000 per person
+- ONLY single vacancy / sharing
+- Rent <= 10000
 - Locations: Baner, Pashan, Bavdhan, Bhugaon, Sus
-- Must be semi-furnished or fully furnished
-- REJECT unfurnished
-- REJECT full flat unless clearly "per person" or "sharing"
-
-SMART DETECTION:
-- If 2BHK/3BHK but mentions "vacancy" or "sharing" → ACCEPT
-- If rent looks too low for full flat → treat carefully
-- Prefer genuine flatmate posts
+- Reject unfurnished
 
 Message:
 {msg}
 
-Reply STRICTLY in this format:
+Reply:
 MATCH: YES or NO
-REASON: short reason
-TYPE: vacancy/full/unknown
-RENT: value or NA
-AREA: value or NA
-FURNISHING: furnished/semi/unfurnished/unknown
 """
 
     try:
@@ -91,10 +94,12 @@ FURNISHING: furnished/semi/unfurnished/unknown
         )
 
         text = getattr(response, "text", "")
+        print("🤖 AI Response:", text)
+
         return "MATCH: YES" in text, text
 
     except Exception as e:
-        print("AI Error:", e)
+        print("❌ AI Error:", e)
         return False, str(e)
 
 # ===== HANDLER =====
@@ -102,23 +107,31 @@ FURNISHING: furnished/semi/unfurnished/unknown
 async def handler(event):
     msg = event.message.message
 
+    print("\n==============================")
+    print("📩 NEW MESSAGE RECEIVED")
+    print("🆔 Chat ID:", event.chat_id)
+    print("💬 Message:", msg)
+
     if not msg:
+        print("⚠️ Empty message")
         return
 
-    print("📩 Incoming:", msg[:80])
-
+    # BASIC FILTER
     if not basic_filter(msg):
-        print("❌ Basic filter rejected")
+        print("❌ Rejected by basic filter")
         return
 
+    # AI FILTER
     match, analysis = ai_filter(msg)
 
     if match:
+        print("🎯 MATCH FOUND")
+
         alert = f"🏠 MATCH FOUND\n\n{msg}\n\n📊 {analysis}"
         send_telegram_alert(alert)
-        print("✅ MATCH SENT")
+
     else:
-        print("❌ AI rejected")
+        print("❌ Rejected by AI")
 
 # ===== START =====
 client.start()
