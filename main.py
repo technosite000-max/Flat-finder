@@ -12,7 +12,13 @@ chat_id = os.getenv("CHAT_ID")
 gemini_api_key = os.getenv("GEMINI_API_KEY")
 
 # ===== CONFIG =====
-AREAS = ["baner", "bavdhan", "bhugaon", "pashan", "sus"]
+AREAS = [
+    "bavdhan", "bhugaon", "bhukum",
+    "sus", "pashan",
+    "baner", "balewadi",
+    "kothrud", "warje", "mahalunge"
+]
+
 MAX_RENT = 10000
 
 # ===== INIT GEMINI =====
@@ -23,48 +29,64 @@ client_ai = genai.Client(api_key=gemini_api_key)
 print("📡 Connecting Telegram client...")
 client = TelegramClient("session", api_id, api_hash)
 
+# ===== DEDUP STORAGE =====
+seen_messages = set()
+
 # ===== SEND ALERT =====
 def send_telegram_alert(message):
-    print("📤 Sending alert to Telegram...")
+    print("📤 Sending alert...")
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     res = requests.post(url, data={"chat_id": chat_id, "text": message})
-
-    print("📬 Telegram Response:", res.status_code, res.text)
+    print("📬 Response:", res.status_code)
 
 # ===== BASIC FILTER =====
 def basic_filter(msg):
     msg_lower = msg.lower()
     print("🔍 Running basic filter...")
 
-    # Area check
-    area_match = any(area in msg_lower for area in AREAS)
-    print("📍 Area match:", area_match)
-
-    if not area_match:
+    # AREA CHECK
+    if not any(area in msg_lower for area in AREAS):
+        print("❌ Area not matched")
         return False
 
-    # Flat rejection logic
-    if "2bhk" in msg_lower or "3bhk" in msg_lower:
-        if "per person" not in msg_lower and "sharing" not in msg_lower:
-            print("🏠 Rejected full flat")
+    # VACANCY INTENT
+    if not any(word in msg_lower for word in [
+        "vacancy", "flatmate", "sharing", "replacement", "room"
+    ]):
+        print("❌ No vacancy intent")
+        return False
+
+    # REJECT FULL FLAT POSTS
+    if any(word in msg_lower for word in ["1bhk", "2bhk", "3bhk"]):
+        if not any(word in msg_lower for word in [
+            "vacancy", "sharing", "per person", "flatmate", "room"
+        ]):
+            print("🏠 Full flat rejected")
             return False
 
-    # Unfurnished reject
-    if "unfurnished" in msg_lower:
-        print("🪑 Rejected unfurnished")
+    # ONLY REJECT FEMALE-ONLY POSTS
+    if any(word in msg_lower for word in [
+        "female only", "girls only", "only for girls"
+    ]):
+        print("❌ Female-only rejected")
         return False
 
-    # Rent extraction
+    # RENT CHECK
     rent = re.findall(r'\d{3,5}', msg_lower)
-    print("💰 Rent extracted:", rent)
+    print("💰 Rent found:", rent)
 
     if rent:
         try:
             if int(rent[0]) > MAX_RENT:
-                print("💸 Rent too high:", rent[0])
+                print("💸 Rent too high")
                 return False
-        except Exception as e:
-            print("⚠️ Rent parse error:", e)
+        except:
+            pass
+
+    # UNFURNISHED REJECT
+    if "unfurnished" in msg_lower:
+        print("🪑 Unfurnished rejected")
+        return False
 
     print("✅ Basic filter passed")
     return True
@@ -74,17 +96,37 @@ def ai_filter(msg):
     print("🧠 Sending to AI...")
 
     prompt = f"""
-User is looking for:
-- ONLY single vacancy / sharing
-- Rent <= 10000
-- Locations: Baner, Pashan, Bavdhan, Bhugaon, Sus
-- Reject unfurnished
+You are a strict classifier for rental messages.
 
-Message:
+USER REQUIREMENTS:
+- Male or mixed allowed (girls allowed is OK)
+- Only reject if strictly "female only"
+- Single vacancy / flatmate / shared room / one room in flat
+- Rent must be <= 10000 per person
+- Areas near Bavdhan Pune:
+  Bavdhan, Bhugaon, Bhukum, Sus, Pashan, Baner, Balewadi, Kothrud
+- Must NOT be unfurnished
+- Reject full flat listings unless sharing clearly mentioned
+
+RULES:
+- "vacancy available" → ACCEPT
+- "1 room available in 2BHK" → ACCEPT
+- "girls allowed" → ACCEPT
+- "female only" → REJECT
+- "2BHK full flat rent 25k" → REJECT
+- If unclear → REJECT
+
+MESSAGE:
 {msg}
 
-Reply:
+OUTPUT FORMAT STRICT:
 MATCH: YES or NO
+CONFIDENCE: HIGH / MEDIUM / LOW
+REASON: short reason
+TYPE: vacancy/full/room/unknown
+RENT: number or NA
+AREA: detected area or NA
+GENDER: male/female/mixed/unknown
 """
 
     try:
@@ -96,11 +138,16 @@ MATCH: YES or NO
         text = getattr(response, "text", "")
         print("🤖 AI Response:", text)
 
-        return "MATCH: YES" in text, text
+        # Only accept high confidence
+        if "MATCH: YES" in text and "CONFIDENCE: LOW" not in text:
+            return True, text
+
+        return False, text
 
     except Exception as e:
         print("❌ AI Error:", e)
-        return False, str(e)
+        # fallback → allow if basic filter passed
+        return True, "AI failed but basic filter passed"
 
 # ===== HANDLER =====
 @client.on(events.NewMessage)
@@ -108,13 +155,17 @@ async def handler(event):
     msg = event.message.message
 
     print("\n==============================")
-    print("📩 NEW MESSAGE RECEIVED")
-    print("🆔 Chat ID:", event.chat_id)
-    print("💬 Message:", msg)
+    print("📩 NEW MESSAGE")
+    print("💬", msg)
 
     if not msg:
-        print("⚠️ Empty message")
         return
+
+    # DEDUP
+    if msg in seen_messages:
+        print("⚠️ Duplicate skipped")
+        return
+    seen_messages.add(msg)
 
     # BASIC FILTER
     if not basic_filter(msg):
@@ -127,7 +178,17 @@ async def handler(event):
     if match:
         print("🎯 MATCH FOUND")
 
-        alert = f"🏠 MATCH FOUND\n\n{msg}\n\n📊 {analysis}"
+        # PHONE EXTRACTION
+        phones = re.findall(r'\b\d{10}\b', msg)
+        phone_text = f"\n📞 Contact: {phones[0]}" if phones else ""
+
+        alert = f"""🏠 MATCH FOUND
+
+{msg}{phone_text}
+
+📊 {analysis}
+"""
+
         send_telegram_alert(alert)
 
     else:
